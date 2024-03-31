@@ -23,3 +23,6 @@ go.work
 
 # Fyne's packaging files
 *.syso
+
+# Signing certificate
+sign.txt

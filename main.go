@@ -16,21 +16,35 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-	"github.com/princessmortix/gobalt"
+	"github.com/lostdusty/gobalt"
 )
 
 var verifyLink = regexp.MustCompile(`[-a-zA-Z0-9@:%_\+.~#?&//=]{2,256}\.[a-z]{2,4}\b(\/[-a-zA-Z0-9@:%_\+.~#?&//=]*)?`)
-var count int
+var count = 0
 var GualtoWin fyne.Window
-var onSaveDialog bool
+var instancesList []string
 
 func main() {
-	newDownload := gobalt.CreateDefaultSettings()
+	newDownload := gobalt.CreateDefaultSettings() //Create default settings for downloading
 
 	gualtoApp := app.NewWithID("com.lostdusty.gualto")
 	GualtoWin = gualtoApp.NewWindow("Gualto")
 	GualtoWin.CenterOnScreen()
 	GualtoWin.Resize(fyne.Size{Width: 800, Height: 400})
+
+	//Async fetches cobalt instances. If it fails, add only the main instance to the list
+	go func() {
+		asyncGetCobaltInstances, err := gobalt.GetCobaltInstances()
+		if err != nil {
+			dialog.ShowError(fmt.Errorf("failed to fetch more cobalt instances"), GualtoWin)
+			instancesList = append(instancesList, gobalt.CobaltApi)
+			return
+		}
+
+		for _, cobaltInstances := range asyncGetCobaltInstances {
+			instancesList = append(instancesList, fmt.Sprintf("https://%v", cobaltInstances.URL))
+		}
+	}()
 
 	labelMain := widget.NewRichTextFromMarkdown("# Gualto\n\nSave what you love, no extra bullshit. Paste your url below to begin the download.")
 	labelMain.Wrapping = fyne.TextWrapWord
@@ -49,7 +63,7 @@ func main() {
 		}
 	})
 
-	checkAccordionSettingTwitter := widget.NewCheck("Convert Twitter gifs", func(b bool) {
+	checkAccordionSettingTwitter := widget.NewCheck("Don't convert Twitter gifs", func(b bool) {
 		newDownload.ConvertTwitterGifs = b
 	})
 	checkAccordionSettingTwitter.Checked = true
@@ -154,17 +168,24 @@ func main() {
 		info.Show()
 	})
 	aboutButton.Importance = widget.HighImportance
+
+	//Settings
 	settingsButton := widget.NewButtonWithIcon("settings", theme.SettingsIcon(), func() {
 		storedInstance := gualtoApp.Preferences().StringWithFallback("instance", gobalt.CobaltApi)
+		checkClipboard := gualtoApp.Preferences().BoolWithFallback("clipboard", true)
 		changeInstancesList := &widget.Select{
 			Selected: storedInstance,
-			Options:  []string{"https://co.wuk.sh", "https://cobalt-api.hyper.lol", "https://coapi.bigbenster702.com", "https://downloadapi.stuff.solutions", "https://cobalt.api.timelessnesses.me", "https://api-dl.cgm.rs", "https://co-api.mae.wtf", "https://capi.oak.li"},
+			Options:  instancesList,
 		}
 		changeInstancesLabel := widget.NewLabel("This allows you to use a custom instance.\nOnly change if you know what you are doing!")
 		changeInstancesList.OnChanged = func(s string) {
 			gualtoApp.Preferences().SetString("instance", s)
 		}
-		settingsDialog := dialog.NewCustom("Gualto App Settings", "Close", container.NewVBox(changeInstancesLabel, changeInstancesList), GualtoWin)
+		shouldCheckClipboard := widget.NewCheck("Check clipboard for media to download?", func(b bool) {
+			gualtoApp.Preferences().SetBool("clipboard", b)
+		})
+		shouldCheckClipboard.Checked = checkClipboard
+		settingsDialog := dialog.NewCustom("Gualto App Settings", "Close", container.NewVBox(changeInstancesLabel, changeInstancesList, widget.NewSeparator(), shouldCheckClipboard), GualtoWin)
 		settingsDialog.Show()
 	})
 	settingsButton.IconPlacement = widget.ButtonIconTrailingText
@@ -175,7 +196,6 @@ func main() {
 		newDownload.Url = pasteURL.Text
 		downloadMedia(newDownload)
 		submitURL.Enable()
-
 	}
 
 	/* CREATE THE FINAL LAYOUT AND DISPLAY */
@@ -186,21 +206,20 @@ func main() {
 	GualtoWin.SetContent(windowContent)
 
 	gualtoApp.Lifecycle().SetOnEnteredForeground(func() {
-		if count == 0 || onSaveDialog {
-			count++
-			return
-		}
 		go func() {
-			isLink := verifyLink.MatchString(GualtoWin.Clipboard().Content())
-			if !isLink {
-				return
-			}
-			downloadClipAsk := dialog.NewConfirm("We found an link!", "Found an url on your clipboard, do you want to paste it?", func(b bool) {
-				if b {
-					pasteURL.SetText(GualtoWin.Clipboard().Content())
+			if count != 0 || gualtoApp.Preferences().Bool("clipboard") {
+				isLink := verifyLink.MatchString(GualtoWin.Clipboard().Content())
+				if !isLink {
+					return
 				}
-			}, GualtoWin)
-			downloadClipAsk.Show()
+				downloadClipAsk := dialog.NewConfirm("We found an link!", "Paste URL found on clipboard?", func(b bool) {
+					if b {
+						pasteURL.SetText(GualtoWin.Clipboard().Content())
+					}
+				}, GualtoWin)
+				downloadClipAsk.Show()
+				count++
+			}
 		}()
 	})
 
@@ -208,7 +227,7 @@ func main() {
 }
 
 func downloadMedia(options gobalt.Settings) {
-	onSaveDialog = true
+	count = 0
 	statusProgressBar := dialog.NewCustomWithoutButtons("Downloading....", widget.NewProgressBarInfinite(), GualtoWin)
 	statusProgressBar.Show()
 	cobaltRequestDownloadFile, err := gobalt.Run(options)
@@ -217,7 +236,7 @@ func downloadMedia(options gobalt.Settings) {
 		return
 	}
 	if cobaltRequestDownloadFile.Status == "picker" {
-		dialog.ShowError(fmt.Errorf("Picker is not supported yet."), GualtoWin)
+		dialog.ShowError(fmt.Errorf("picker is not supported yet"), GualtoWin)
 		return
 	}
 
@@ -241,10 +260,12 @@ func downloadMedia(options gobalt.Settings) {
 
 	saveFileDialog := dialog.NewFileSave(func(uc fyne.URIWriteCloser, err error) {
 		if err != nil {
+			statusProgressBar.Hide()
 			dialog.ShowError(err, GualtoWin)
 			return
 		}
 		if uc == nil {
+			statusProgressBar.Hide()
 			return
 		}
 
@@ -256,11 +277,10 @@ func downloadMedia(options gobalt.Settings) {
 		}
 		cobaltMediaResponse.Body.Close()
 		statusProgressBar.Hide()
-		dialog.ShowInformation(fmt.Sprintf("Downloaded %d.2MB of your media!", (fromReqToFile/1000000)), "The download was sucessful.", GualtoWin)
+		dialog.ShowInformation(fmt.Sprintf("Media (%d.2MB) saved with success!", (fromReqToFile/1000000)), fmt.Sprintf("Saved to %v", uc.URI().Path()), GualtoWin)
 
 	}, GualtoWin)
 	saveFileDialog.SetFileName(mediaFilename)
 	saveFileDialog.Show()
 
-	onSaveDialog = false
 }

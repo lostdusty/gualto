@@ -4,7 +4,7 @@ go 1.21.5
 
 require (
 	fyne.io/fyne/v2 v2.4.4
-	github.com/princessmortix/gobalt v1.0.4
+	github.com/lostdusty/gobalt v1.0.5
 )
 
 require (
