@@ -20,13 +20,12 @@ import (
 )
 
 var verifyLink = regexp.MustCompile(`[-a-zA-Z0-9@:%_\+.~#?&//=]{2,256}\.[a-z]{2,4}\b(\/[-a-zA-Z0-9@:%_\+.~#?&//=]*)?`)
-var count = 0
+var blockClip bool
 var GualtoWin fyne.Window
 var instancesList []string
 
 func main() {
 	newDownload := gobalt.CreateDefaultSettings() //Create default settings for downloading
-
 	gualtoApp := app.NewWithID("com.lostdusty.gualto")
 	GualtoWin = gualtoApp.NewWindow("Gualto")
 	GualtoWin.CenterOnScreen()
@@ -158,19 +157,21 @@ func main() {
 
 	/* ABOUt & SETTINGS BUTTONS AT THE END */
 	aboutButton := widget.NewButtonWithIcon("about", theme.InfoIcon(), func() {
+		blockClip = true
 		infoTextTitle := widget.NewRichTextFromMarkdown("## Gualto")
 		infoExit := widget.NewButtonWithIcon("", theme.CancelIcon(), nil)
 		infoExit.Importance = widget.DangerImportance
 		infoHeader := container.NewBorder(nil, nil, infoTextTitle, infoExit)
 		infoText := widget.NewRichTextFromMarkdown("Save what you love, no extra bullshit.\n\nUses [cobalt.tools](cobalt.tools) under the hood.\n\n### Thanks to..\nYou, Wukko, JJ & contributors")
 		info := widget.NewModalPopUp(container.NewBorder(infoHeader, nil, nil, nil, infoText), GualtoWin.Canvas())
-		infoExit.OnTapped = func() { info.Hide() }
+		infoExit.OnTapped = func() { info.Hide(); blockClip = false }
 		info.Show()
 	})
 	aboutButton.Importance = widget.HighImportance
 
 	//Settings
 	settingsButton := widget.NewButtonWithIcon("settings", theme.SettingsIcon(), func() {
+		blockClip = true
 		storedInstance := gualtoApp.Preferences().StringWithFallback("instance", gobalt.CobaltApi)
 		checkClipboard := gualtoApp.Preferences().BoolWithFallback("clipboard", true)
 		changeInstancesList := &widget.Select{
@@ -187,15 +188,32 @@ func main() {
 		shouldCheckClipboard.Checked = checkClipboard
 		settingsDialog := dialog.NewCustom("Gualto App Settings", "Close", container.NewVBox(changeInstancesLabel, changeInstancesList, widget.NewSeparator(), shouldCheckClipboard), GualtoWin)
 		settingsDialog.Show()
+		settingsDialog.SetOnClosed(func() {
+			blockClip = false
+		})
 	})
 	settingsButton.IconPlacement = widget.ButtonIconTrailingText
 	settingsButton.Importance = widget.HighImportance
 	submitURL.OnTapped = func() {
+		blockClip = true
 		submitURL.Disable()
 
+		statusProgressBar := dialog.NewCustomWithoutButtons("Downloading....", widget.NewProgressBarInfinite(), GualtoWin)
+		statusProgressBar.Show()
+
 		newDownload.Url = pasteURL.Text
-		downloadMedia(newDownload)
+
+		err := downloadMedia(newDownload)
+		if err != nil {
+			errLab := widget.NewLabel(err.Error())
+			errLab.Wrapping = fyne.TextWrapWord
+			dialog.NewCustom("Somewent went wrong while downloading!", "close", errLab, GualtoWin)
+			statusProgressBar.Hide()
+		}
+
+		statusProgressBar.Hide()
 		submitURL.Enable()
+		blockClip = false
 	}
 
 	/* CREATE THE FINAL LAYOUT AND DISPLAY */
@@ -207,18 +225,23 @@ func main() {
 
 	gualtoApp.Lifecycle().SetOnEnteredForeground(func() {
 		go func() {
-			if count != 0 || gualtoApp.Preferences().Bool("clipboard") {
+			if !blockClip && gualtoApp.Preferences().Bool("clipboard") { //Show clipboard paste if all of these are true
+				blockClip = true
 				isLink := verifyLink.MatchString(GualtoWin.Clipboard().Content())
 				if !isLink {
 					return
 				}
-				downloadClipAsk := dialog.NewConfirm("We found an link!", "Paste URL found on clipboard?", func(b bool) {
+				downloadClipAsk := dialog.NewConfirm("We found an link!", "Paste URL from clipboard?", func(b bool) {
 					if b {
 						pasteURL.SetText(GualtoWin.Clipboard().Content())
 					}
 				}, GualtoWin)
 				downloadClipAsk.Show()
-				count++
+				downloadClipAsk.SetOnClosed(func() {
+					blockClip = false
+				})
+			} else {
+				return
 			}
 		}()
 	})
@@ -226,61 +249,43 @@ func main() {
 	GualtoWin.ShowAndRun()
 }
 
-func downloadMedia(options gobalt.Settings) {
-	count = 0
-	statusProgressBar := dialog.NewCustomWithoutButtons("Downloading....", widget.NewProgressBarInfinite(), GualtoWin)
-	statusProgressBar.Show()
+func downloadMedia(options gobalt.Settings) error {
 	cobaltRequestDownloadFile, err := gobalt.Run(options)
 	if err != nil {
-		dialog.ShowError(err, GualtoWin)
-		return
+		return err
 	}
 	if cobaltRequestDownloadFile.Status == "picker" {
-		dialog.ShowError(fmt.Errorf("picker is not supported yet"), GualtoWin)
-		return
+		return fmt.Errorf("picker is not supported yet")
 	}
-
-	fmt.Println("Sending request...")
 	cobaltMediaResponse, err := http.Get(cobaltRequestDownloadFile.URL)
 	if err != nil {
-		statusProgressBar.Hide()
-		dialog.ShowCustom("error", "close", container.NewVBox(&widget.Label{Text: err.Error(), Wrapping: fyne.TextWrapWord}), GualtoWin)
-		return
+		return err
 	}
-	fmt.Println("Request send, parsing file...")
-	//defer cobaltMediaResponse.Body.Close()
 	cobaltGetFileName := cobaltMediaResponse.Header.Get("Content-Disposition")
 	_, parseFileName, err := mime.ParseMediaType(cobaltGetFileName)
 	mediaFilename := parseFileName["filename"]
 	if err != nil {
 		mediaFilename = path.Base(cobaltMediaResponse.Request.URL.Path)
 	}
-
-	fmt.Println("Filename is:", mediaFilename)
+	normalizeFileName := regexp.MustCompile(`[^[:word:][:punct:]\s]`)
+	normalFileName := normalizeFileName.ReplaceAllString(mediaFilename, "")
+	fmt.Printf("old %v, new: %v\n", mediaFilename, normalFileName)
 
 	saveFileDialog := dialog.NewFileSave(func(uc fyne.URIWriteCloser, err error) {
-		if err != nil {
-			statusProgressBar.Hide()
-			dialog.ShowError(err, GualtoWin)
+		blockClip = true
+		if err != nil || uc == nil {
 			return
 		}
-		if uc == nil {
-			statusProgressBar.Hide()
-			return
-		}
-
 		fromReqToFile, err := io.Copy(uc, cobaltMediaResponse.Body)
 		if err != nil {
-			statusProgressBar.Hide()
 			dialog.ShowCustom("error", "close", container.NewVBox(&widget.Label{Text: err.Error(), Wrapping: fyne.TextWrapWord}), GualtoWin)
 			return
 		}
 		cobaltMediaResponse.Body.Close()
-		statusProgressBar.Hide()
 		dialog.ShowInformation(fmt.Sprintf("Media (%d.2MB) saved with success!", (fromReqToFile/1000000)), fmt.Sprintf("Saved to %v", uc.URI().Path()), GualtoWin)
-
+		blockClip = false
 	}, GualtoWin)
-	saveFileDialog.SetFileName(mediaFilename)
-	saveFileDialog.Show()
-
+	saveFileDialog.SetFileName(normalFileName)
+	go saveFileDialog.Show()
+	return nil
 }
