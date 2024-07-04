@@ -14,36 +14,56 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/data/validation"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/lostdusty/gobalt"
 )
 
-var verifyLink = regexp.MustCompile(`[-a-zA-Z0-9@:%_\+.~#?&//=]{2,256}\.[a-z]{2,4}\b(\/[-a-zA-Z0-9@:%_\+.~#?&//=]*)?`)
-var blockClip bool
-var GualtoWin fyne.Window
-var instancesList []string
+var (
+	verifyLink      = regexp.MustCompile(`[-a-zA-Z0-9@:%_\+.~#?&//=]{2,256}\.[a-z]{2,4}\b(\/[-a-zA-Z0-9@:%_\+.~#?&//=]*)?`)
+	blockClip       bool
+	GualtoWin       fyne.Window
+	GualtoApp       fyne.App
+	cobaltInstances []string
+)
+
+func discoverCobaltInstances() {
+	asyncGetCobaltInstances, err := gobalt.GetCobaltInstances()
+	if err != nil {
+		dialog.ShowError(fmt.Errorf("failed to fetch more cobalt instances"), GualtoWin)
+		cobaltInstances = append(cobaltInstances, gobalt.CobaltApi)
+		return
+	}
+
+	for _, dcobaltInstances := range asyncGetCobaltInstances {
+		cobaltInstances = append(cobaltInstances, fmt.Sprintf("https://%v", dcobaltInstances.URL))
+	}
+
+}
 
 func main() {
 	newDownload := gobalt.CreateDefaultSettings() //Create default settings for downloading
-	gualtoApp := app.NewWithID("com.lostdusty.gualto")
-	GualtoWin = gualtoApp.NewWindow("Gualto")
+	GualtoApp = app.NewWithID("com.lostdusty.gualto")
+	GualtoWin = GualtoApp.NewWindow("Gualto")
 	GualtoWin.CenterOnScreen()
-	GualtoWin.Resize(fyne.Size{Width: 800, Height: 400})
+	GualtoWin.Resize(fyne.Size{Width: 600, Height: 400})
+
+	/* APP SETTINGS GETTERS
+	 */
+	storedInstance := GualtoApp.Preferences().StringWithFallback("instance", gobalt.CobaltApi)
+	checkClipboard := GualtoApp.Preferences().BoolWithFallback("clipboard", true)
+	shouldRememberPath := GualtoApp.Preferences().BoolWithFallback("remember-path", true)
+	GualtoApp.Preferences().StringWithFallback("path", "")
+	newTheme := GualtoApp.Preferences().BoolWithFallback("theme", false)
+	if newTheme {
+		GualtoApp.Settings().SetTheme(cobaltTheme{})
+	}
+	/* END OF THE APP SETTINGS SECTION
+	 */
 
 	//Async fetches cobalt instances. If it fails, add only the main instance to the list
-	go func() {
-		asyncGetCobaltInstances, err := gobalt.GetCobaltInstances()
-		if err != nil {
-			dialog.ShowError(fmt.Errorf("failed to fetch more cobalt instances"), GualtoWin)
-			instancesList = append(instancesList, gobalt.CobaltApi)
-			return
-		}
-
-		for _, cobaltInstances := range asyncGetCobaltInstances {
-			instancesList = append(instancesList, fmt.Sprintf("https://%v", cobaltInstances.URL))
-		}
-	}()
+	go discoverCobaltInstances()
 
 	labelMain := widget.NewRichTextFromMarkdown("# Gualto\n\nSave what you love, no extra bullshit. Paste your url below to begin the download.")
 	labelMain.Wrapping = fyne.TextWrapWord
@@ -62,20 +82,60 @@ func main() {
 		}
 	})
 
-	checkAccordionSettingTwitter := widget.NewCheck("Don't convert Twitter gifs", func(b bool) {
-		newDownload.ConvertTwitterGifs = b
-	})
-	checkAccordionSettingTwitter.Checked = true
+	/* Author: LD
+	PART I: Ui components for the download settings related children.
 
-	labelAccordionSettingQuality := widget.NewLabel("Video Quality")
-	selAccordionSettingQuality := widget.NewSelect([]string{"360", "480", "720", "1080", "1440", "2160"}, func(s string) {
+	SECTION I: GENERAL OPTIONS
+	MODIFIED: 03/07/2024
+	*/
+	downloadSettingLabelGeneral := widget.NewRichTextFromMarkdown("### General")
+	// "General"
+
+	downloadSettingDisableMetadata := widget.NewCheck("Disable metadata?", func(b bool) {
+		newDownload.DisableVideoMetadata = b
+	})
+	//[] Disable metadata?
+
+	downloadSettingLabelFilenamePattern := widget.NewLabel("Name file as:")
+	downloadSettingSelectFilenamePattern := widget.NewSelect([]string{"classic", "basic", "pretty", "nerdy"}, func(s string) {
+		switch s {
+		case "basic":
+			newDownload.FilenamePattern = gobalt.Basic
+		case "classic":
+			newDownload.FilenamePattern = gobalt.Classic
+		case "nerdy":
+			newDownload.FilenamePattern = gobalt.Nerdy
+		case "pretty":
+			newDownload.FilenamePattern = gobalt.Pretty
+		}
+	})
+	downloadSettingSelectFilenamePattern.SetSelectedIndex(0)
+	//Name file as: [Basic]
+
+	boxFilenameSettings := container.NewHBox(downloadSettingLabelFilenamePattern, downloadSettingSelectFilenamePattern)
+	// Container to group checkbox & text to make: [] Disable metadata?
+
+	groupGeneralDownload := container.NewVBox(downloadSettingLabelGeneral, downloadSettingDisableMetadata, boxFilenameSettings)
+	//Merge them all like:
+	// ## General
+	// [] Disable metadata?
+	// Name file as: [Basic]
+
+	/*	SECTION II: VIDEO SETTINGS	*/
+
+	downloadSettingLabelVideo := widget.NewRichTextFromMarkdown("### Video")
+	// ## Video
+
+	downloadSettingLabelQuality := widget.NewLabel("Video Quality:")
+	downloadSettingSelectQuality := widget.NewSelect([]string{"144", "240", "360", "480", "720", "1080", "1440", "2160"}, func(s string) {
 		newDownload.VideoQuality, _ = strconv.Atoi(s)
 	})
-	selAccordionSettingQuality.Selected = "1080"
-	qualitySettings := container.NewHBox(labelAccordionSettingQuality, selAccordionSettingQuality)
+	downloadSettingSelectQuality.Selected = "1080"
+	boxQualitySettings := container.NewHBox(downloadSettingLabelQuality, downloadSettingSelectQuality)
+	// Video Quality: [1080]
 
-	labelAccordionSettingCodec := widget.NewLabel("Video Codec")
-	selAccordionSettingCodec := widget.NewSelect([]string{"h264", "av1", "vp9"}, func(s string) {
+	downloadSettingLabelVideoCodec := widget.NewLabel("Youtube Video Codec:")
+	downloadSettingSelectVideoCodec := widget.NewSelect([]string{"h264", "av1", "vp9"}, func(s string) {
 		//TODO: Move this to gobalt
 		switch s {
 		case "h264":
@@ -86,11 +146,28 @@ func main() {
 			newDownload.VideoCodec = gobalt.VP9
 		}
 	})
-	selAccordionSettingCodec.Selected = "h264"
-	codecSettings := container.NewHBox(labelAccordionSettingCodec, selAccordionSettingCodec)
+	downloadSettingSelectVideoCodec.Selected = "h264"
+	boxCodecSettings := container.NewHBox(downloadSettingLabelVideoCodec, downloadSettingSelectVideoCodec)
+	// Youtube Video Codec: [h264]
 
-	labelAccordionSettingAudio := widget.NewLabel("Audio format")
-	selAccordionSettingAudio := widget.NewSelect([]string{"best", "mp3", "ogg", "wav", "opus"}, func(s string) {
+	downloadSettingRemoveVideo := widget.NewCheck("Remove video?", func(b bool) {
+		newDownload.AudioOnly = b
+	})
+	// [] Remove video?
+
+	groupVideoDownload := container.NewVBox(downloadSettingLabelVideo, boxQualitySettings, boxCodecSettings, downloadSettingRemoveVideo)
+	//Merge them like:
+	// ## Video
+	// Video Quality: [1080]
+	// Youtube Video Codec: [h264]
+	// [] Remove video?
+
+	/*	SECTION III: AUDIO	*/
+	downloadSettingLabelAudio := widget.NewRichTextFromMarkdown("### Audio")
+	// ## Audio
+
+	downloadSettingLabelAudioCodec := widget.NewLabel("Audio format:")
+	downloadSettingSelectAudioCodec := widget.NewSelect([]string{"best", "mp3", "ogg", "wav", "opus"}, func(s string) {
 		switch s {
 		case "best":
 			newDownload.AudioCodec = gobalt.Best
@@ -104,96 +181,110 @@ func main() {
 			newDownload.AudioCodec = gobalt.Opus
 		}
 	})
-	selAccordionSettingAudio.SetSelectedIndex(0)
-	audioFormatSettings := container.NewHBox(labelAccordionSettingAudio, selAccordionSettingAudio)
+	downloadSettingSelectAudioCodec.SetSelectedIndex(0)
+	boxAudioSettings := container.NewHBox(downloadSettingLabelAudioCodec, downloadSettingSelectAudioCodec)
+	// Audio format: [best]
 
-	checkAccordionSettingRemoveAudio := widget.NewCheck("Remove audio", func(b bool) {
+	downloadSettingRemoveAudio := widget.NewCheck("Remove audio?", func(b bool) {
 		newDownload.VideoOnly = b
 	})
-	checkAccordionSettingRemoveVideo := widget.NewCheck("Remove video", func(b bool) {
-		newDownload.AudioOnly = b
+	// [] Remove audio?
+
+	groupAudioDownload := container.NewVBox(downloadSettingLabelAudio, boxAudioSettings, downloadSettingRemoveAudio)
+	//Merge them like:
+	// ## Audio
+	// Audio format: [best]
+	// [] Remove audio?
+
+	/*	SECTION IV: PLATFORM SPECIFIC SETTINGS	*/
+	downloadSettingLabelPlatform := widget.NewRichTextFromMarkdown("### Platform specific")
+	// ## Platform specific
+
+	downloadSettingTwitter := widget.NewCheck("Convert Tweets to gifs?", func(b bool) {
+		newDownload.ConvertTwitterGifs = b
 	})
-	checkAccordionSettingDisableMetadata := widget.NewCheck("Disable metadata", func(b bool) {
-		newDownload.DisableVideoMetadata = b
-	})
-	checkAccordionSettingsFullTikTokAudio := widget.NewCheck("Full tiktok audio", func(b bool) {
+	downloadSettingTwitter.Checked = true
+	// [X] Convert Tweets to gifs?
+
+	downloadSettingTiktok := widget.NewCheck("Full tiktok audio?", func(b bool) {
 		newDownload.FullTikTokAudio = b
 	})
+	// [] Full tiktok audio?
 
-	labelFilenamePattern := widget.NewLabel("File name style")
-	selFileNamePattern := widget.NewSelect([]string{"classic", "basic", "pretty", "nerdy"}, func(s string) {
-		switch s {
-		case "basic":
-			newDownload.FilenamePattern = gobalt.Basic
-		case "classic":
-			newDownload.FilenamePattern = gobalt.Classic
-		case "nerdy":
-			newDownload.FilenamePattern = gobalt.Nerdy
-		case "pretty":
-			newDownload.FilenamePattern = gobalt.Pretty
-		}
-	})
-	selFileNamePattern.SetSelectedIndex(2)
-	filenameSettings := container.NewHBox(labelFilenamePattern, selFileNamePattern)
+	groupPlatformSpecific := container.NewVBox(downloadSettingLabelPlatform, downloadSettingTwitter, downloadSettingTiktok)
+	//Merge them like:
+	// ## Platform specific
+	// [X] Convert Tweets to gifs?
+	// [] Full tiktok audio?
 
-	accordionMaster := &widget.AccordionItem{
-		Title: "Download options",
-		Detail: container.NewVBox(checkAccordionSettingTwitter,
-			qualitySettings,
-			codecSettings,
-			audioFormatSettings,
-			checkAccordionSettingRemoveAudio,
-			checkAccordionSettingRemoveVideo,
-			checkAccordionSettingDisableMetadata,
-			filenameSettings,
-			checkAccordionSettingsFullTikTokAudio,
-		),
+	/*	SECTION V: MERGE INTO A SINGLE CONTAINER	*/
+	leftOptions := container.NewVBox(groupGeneralDownload, groupVideoDownload)
+	rightOptions := container.NewVBox(groupAudioDownload, groupPlatformSpecific)
+	//sep := canvas.NewLine(theme.PrimaryColor())
+	downloadOptions := container.NewAdaptiveGrid(2, leftOptions, rightOptions)
+	/*
+	* END OF PART I.
+	 */
+
+	/* Author: LD
+	PART II: Layout for the tab "about".
+
+	SECTION I: Text Definition
+	MODIFIED: 04/07/2024
+	*/
+	aboutTabMainText := widget.NewRichTextFromMarkdown("# About\n\nSave what you love, no extra bullshit.\n\nUses [cobalt.tools](cobalt.tools) under the hood.\n\n### Thanks to..\nYou, Wukko, JJ & contributors")
+	aboutTab := container.NewTabItemWithIcon("", theme.InfoIcon(), aboutTabMainText)
+	/*
+	* END OF PART II.
+	 */
+
+	/* Author: LD
+	PART III: Layout for the tab "settings".
+
+	SECTION I: GET SETTINGS
+	MODIFIED: 04/07/2024
+	*/
+	tabSettingsSelectInstance := &widget.Select{
+		Selected: storedInstance,
+		Options:  cobaltInstances,
 	}
 
-	accordionOptions := &widget.Accordion{
-		Items:     []*widget.AccordionItem{accordionMaster},
-		MultiOpen: true,
+	/*	SECTION II: CREATE LAYOUT TEXT + INSTANCE CHANGER	*/
+	tabSettingsLabelInstance := widget.NewRichTextFromMarkdown("# Settings\n\nThis settings allows you to use a custom instance.\n\nYou might want to change this if you're getting any issues with the selected instance.")
+	tabSettingsSelectInstance.OnChanged = func(s string) {
+		GualtoApp.Preferences().SetString("instance", s)
 	}
 
-	/* ABOUt & SETTINGS BUTTONS AT THE END */
-	aboutButton := widget.NewButtonWithIcon("about", theme.InfoIcon(), func() {
-		blockClip = true
-		infoTextTitle := widget.NewRichTextFromMarkdown("## Gualto")
-		infoExit := widget.NewButtonWithIcon("", theme.CancelIcon(), nil)
-		infoExit.Importance = widget.DangerImportance
-		infoHeader := container.NewBorder(nil, nil, infoTextTitle, infoExit)
-		infoText := widget.NewRichTextFromMarkdown("Save what you love, no extra bullshit.\n\nUses [cobalt.tools](cobalt.tools) under the hood.\n\n### Thanks to..\nYou, Wukko, JJ & contributors")
-		info := widget.NewModalPopUp(container.NewBorder(infoHeader, nil, nil, nil, infoText), GualtoWin.Canvas())
-		infoExit.OnTapped = func() { info.Hide(); blockClip = false }
-		info.Show()
+	/*	SECTION III: OPTION TO SCAN CLIPBOARD FOR DOWNLOADABLE LINKS	*/
+	tabSettingsCheckClip := widget.NewCheck("Check clipboard for links to download?", func(b bool) {
+		GualtoApp.Preferences().SetBool("clipboard", b)
 	})
-	aboutButton.Importance = widget.HighImportance
+	tabSettingsCheckClip.Checked = checkClipboard
 
-	//Settings
-	settingsButton := widget.NewButtonWithIcon("settings", theme.SettingsIcon(), func() {
-		blockClip = true
-		storedInstance := gualtoApp.Preferences().StringWithFallback("instance", gobalt.CobaltApi)
-		checkClipboard := gualtoApp.Preferences().BoolWithFallback("clipboard", true)
-		changeInstancesList := &widget.Select{
-			Selected: storedInstance,
-			Options:  instancesList,
+	/*	SECTION IV: CUSTOM COBALT THEME?	*/
+	tabSettingsCustomTheme := widget.NewCheck("Use new app theme?", func(b bool) {
+		GualtoApp.Preferences().SetBool("theme", b)
+		if b {
+			GualtoApp.Settings().SetTheme(cobaltTheme{})
+		} else {
+			GualtoApp.Settings().SetTheme(theme.DefaultTheme())
 		}
-		changeInstancesLabel := widget.NewLabel("This allows you to use a custom instance.\nOnly change if you know what you are doing!")
-		changeInstancesList.OnChanged = func(s string) {
-			gualtoApp.Preferences().SetString("instance", s)
-		}
-		shouldCheckClipboard := widget.NewCheck("Check clipboard for media to download?", func(b bool) {
-			gualtoApp.Preferences().SetBool("clipboard", b)
-		})
-		shouldCheckClipboard.Checked = checkClipboard
-		settingsDialog := dialog.NewCustom("Gualto App Settings", "Close", container.NewVBox(changeInstancesLabel, changeInstancesList, widget.NewSeparator(), shouldCheckClipboard), GualtoWin)
-		settingsDialog.Show()
-		settingsDialog.SetOnClosed(func() {
-			blockClip = false
-		})
 	})
-	settingsButton.IconPlacement = widget.ButtonIconTrailingText
-	settingsButton.Importance = widget.HighImportance
+	tabSettingsCustomTheme.Checked = newTheme
+
+	/*	SECTION V: REMEMBER LAST PATH WHERE IT WAS DOWNLOADED?	*/
+	/*	DESKTOP ONLY: ANDROID & iOS PICKER ALREADY DOES THAT	*/
+	tabSettingsLastPath := widget.NewCheck("Remember last folder saved?", func(b bool) {
+		GualtoApp.Preferences().SetBool("remember-path", b)
+	})
+	tabSettingsLastPath.Checked = shouldRememberPath
+	if fyne.CurrentApp().Driver().Device().IsMobile() {
+		tabSettingsLastPath.Hide()
+	}
+
+	tabSettingsContent := container.NewVBox(tabSettingsLabelInstance, tabSettingsSelectInstance, widget.NewSeparator(), tabSettingsCheckClip, widget.NewSeparator(), tabSettingsCustomTheme, widget.NewSeparator(), tabSettingsLastPath)
+	settingsTab := container.NewTabItemWithIcon("", theme.SettingsIcon(), tabSettingsContent)
+
 	submitURL.OnTapped = func() {
 		blockClip = true
 		submitURL.Disable()
@@ -218,14 +309,24 @@ func main() {
 
 	/* CREATE THE FINAL LAYOUT AND DISPLAY */
 	submitContainer := container.NewBorder(nil, nil, nil, submitURL, pasteURL)
-	downloadActions := container.NewVBox(labelMain, widget.NewSeparator(), submitContainer)
-	aboutSettings := container.NewGridWithColumns(2, aboutButton, settingsButton)
-	windowContent := container.NewBorder(downloadActions, aboutSettings, nil, nil, container.NewScroll(accordionOptions))
-	GualtoWin.SetContent(windowContent)
+	downloadActions := container.NewVBox(labelMain, submitContainer)
+	tabMainContent := container.NewBorder(downloadActions, nil, nil, nil, container.NewScroll(downloadOptions))
+	mainTab := container.NewTabItemWithIcon("", theme.HomeIcon(), tabMainContent)
 
-	gualtoApp.Lifecycle().SetOnEnteredForeground(func() {
+	layoutTabs := container.NewAppTabs(mainTab, settingsTab, aboutTab)
+	layoutTabs.OnSelected = func(ti *container.TabItem) {
+		if layoutTabs.SelectedIndex() == 1 && len(cobaltInstances) > 1 {
+			tabSettingsSelectInstance.SetOptions(cobaltInstances) //Fix to set cobalt instances, for some reason it's not being set anymore.
+		}
+	}
+	layoutTabs.SetTabLocation(container.TabLocationLeading)
+
+	GualtoWin.SetContent(layoutTabs)
+
+	GualtoApp.Lifecycle().SetOnEnteredForeground(func() {
+
 		go func() {
-			if !blockClip && gualtoApp.Preferences().Bool("clipboard") { //Show clipboard paste if all of these are true
+			if !blockClip && GualtoApp.Preferences().Bool("clipboard") { //Show clipboard paste if all of these are true
 				blockClip = true
 				isLink := verifyLink.MatchString(GualtoWin.Clipboard().Content())
 				if !isLink {
@@ -269,9 +370,10 @@ func downloadMedia(options gobalt.Settings) error {
 	}
 	normalizeFileName := regexp.MustCompile(`[^[:word:][:punct:]\s]`)
 	normalFileName := normalizeFileName.ReplaceAllString(mediaFilename, "")
-	fmt.Printf("old %v, new: %v\n", mediaFilename, normalFileName)
 
 	saveFileDialog := dialog.NewFileSave(func(uc fyne.URIWriteCloser, err error) {
+		savingFile := dialog.NewProgressInfinite("Downloading your file...", "might take a while.", GualtoWin)
+		savingFile.Show()
 		blockClip = true
 		if err != nil || uc == nil {
 			return
@@ -282,9 +384,18 @@ func downloadMedia(options gobalt.Settings) error {
 			return
 		}
 		cobaltMediaResponse.Body.Close()
+		if GualtoApp.Preferences().Bool("remember-path") {
+			GualtoApp.Preferences().SetString("path", uc.URI().Path())
+		}
+		savingFile.Hide()
 		dialog.ShowInformation(fmt.Sprintf("Media (%d.2MB) saved with success!", (fromReqToFile/1000000)), fmt.Sprintf("Saved to %v", uc.URI().Path()), GualtoWin)
 		blockClip = false
 	}, GualtoWin)
+	if GualtoApp.Preferences().String("path") != "" {
+		u, _ := storage.ParseURI(GualtoApp.Preferences().String("path"))
+		ul, _ := storage.ListerForURI(u)
+		saveFileDialog.SetLocation(ul)
+	}
 	saveFileDialog.SetFileName(normalFileName)
 	go saveFileDialog.Show()
 	return nil
